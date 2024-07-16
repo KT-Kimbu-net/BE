@@ -1,9 +1,9 @@
 ---
-name: "[Feat] - 기능 명"
-about: Suggest an idea for this project
+name: Feature request
+about: 기능추가 이슈 템플릿
 title: ''
 labels: ''
-assignees: ''
+assignees: exceed96
 
 ---
 
