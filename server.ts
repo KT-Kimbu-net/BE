@@ -19,20 +19,16 @@ const io = socketIO(server, {
 
 app.use(cors());
 
-io.on("connection", (socket) => {
-  const srvSockets = io.sockets.sockets;
-  socket.emit("clientsCount", {
-    count: Object.keys(srvSockets).length,
-  });
+let clientsCount = 0;
 
-  console.log(Object.keys(srvSockets).length);
-  io.emit("clientsCount", {
-    count: Object.keys(srvSockets).length,
+io.on("connection", (socket) => {
+  io.emit("peoples", {
+    count: ++clientsCount,
   });
 
   socket.on("disconnect", () => {
-    io.emit("clientsCount", {
-      count: Object.keys(srvSockets).length,
+    io.emit("peoples", {
+      count: --clientsCount,
     });
   });
 
