@@ -3,11 +3,11 @@ const cors = require("cors");
 const socketIO = require("socket.io");
 const http = require("http");
 const path = require("path");
-const config = require("./config");
 const firestore = require("./db");
 const { FieldValue } = require("firebase-admin/firestore");
 
 const app = express();
+
 const server = http.createServer(app);
 const io = socketIO(server, {
   cors: {
@@ -17,25 +17,93 @@ const io = socketIO(server, {
   pingTimeout: 60 * 1000,
 });
 
-app.use(cors());
+app.use(
+  cors({
+    cors: {
+      origin: "*",
+    },
+  })
+);
+
+app.options("*", cors());
 app.use(express.json({ extended: true }));
 
 let clientsCount = 0;
 
-io.on("connection", (socket) => {
-  io.emit("peoples", {
+// Game namespace
+const gameNamespace = io.of("/game");
+gameNamespace.on("connection", (socket: any) => {
+  socket.on("changeScore", async (data: any) => {
+    try {
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, "0");
+      const day = String(today.getDate()).padStart(2, "0");
+      const currentDate = `${year}${month}${day}`;
+      const liveScoreRef = firestore.collection("liveScore");
+      const snapshot = await liveScoreRef
+        .where("gameId", "==", currentDate)
+        .get();
+
+      let docRef;
+
+      if (snapshot.empty) {
+        docRef = await liveScoreRef.add({
+          gameId: currentDate,
+          liveData: {
+            kt: { pitcher: "쿠에바스", score: [] },
+            opponent: { pitcher: "이재학", score: [] },
+          },
+        });
+      } else {
+        console.log("Document found for current date.");
+        docRef = snapshot.docs[0].ref;
+      }
+
+      const fieldToUpdate = data.isKtwiz ? "kt.score" : "opponent.score";
+      const docSnapshot = await docRef.get();
+      const currentScores = docSnapshot.get(`liveData.${fieldToUpdate}`) || [];
+
+      currentScores.push(data.score);
+
+      await docRef.update({
+        [`liveData.${fieldToUpdate}`]: currentScores,
+      });
+      console.log("Firestore updated successfully.");
+
+      gameNamespace.emit("changeScore", data);
+    } catch (error: any) {
+      console.error("Error updating Firestore: ", error);
+    }
+  });
+
+  socket.on("changePitcher", (data: any) => {
+    gameNamespace.emit("changePitcher", data);
+  });
+});
+
+const chatNamespace = io.of("/chat");
+chatNamespace.on("connection", (socket: any) => {
+  chatNamespace.emit("peoples", {
     count: ++clientsCount,
   });
 
   socket.on("disconnect", () => {
-    io.emit("peoples", {
+    chatNamespace.emit("peoples", {
       count: --clientsCount,
     });
   });
-
-  socket.on("chatting", async (data) => {
-    const { nickname, message, msgId, time, userId } = data;
-
+  socket.on("chatting", async (data: any) => {
+    const { nickname, message, msgId, time, userId, type } = data;
+    chatNamespace.emit("chatting", {
+      nickname,
+      message,
+      time,
+      report: [],
+      msgId,
+      userId,
+      type,
+    });
     try {
       const querySnapshot = await firestore
         .collection("chat")
@@ -47,7 +115,7 @@ io.on("connection", (socket) => {
         return;
       }
 
-      querySnapshot.forEach(async (doc) => {
+      querySnapshot.forEach(async (doc: any) => {
         if (!doc.exists) {
           console.error("Error: Document not found");
           return;
@@ -60,6 +128,7 @@ io.on("connection", (socket) => {
           msgId,
           time,
           userId,
+          type,
         };
 
         if (Array.isArray(doc.data().messages)) {
@@ -72,49 +141,93 @@ io.on("connection", (socket) => {
           });
         }
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Firebase error:", error);
     }
-
-    io.emit("chatting", {
-      nickname,
-      message,
-      time,
-      report: [],
-      msgId,
-      userId,
-    });
   });
 });
 
-app.get("/chatLogs", async (req, res) => {
+app.get("/liveinfo", async (req: any, res: any) => {
+  try {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const day = String(today.getDate()).padStart(2, "0");
+    const currentDate = `${year}${month}${day}`;
+
+    const liveScoreRef = firestore.collection("liveScore");
+    const snapshot = await liveScoreRef
+      .where("gameId", "==", currentDate)
+      .get();
+
+    if (snapshot.empty) {
+      const newDocRef = await liveScoreRef.add({
+        gameId: currentDate,
+        liveData: {
+          kt: { pitcher: "쿠에바스", score: [] },
+          opponent: { pitcher: "이재학", score: [] },
+        },
+      });
+
+      const newDoc = await newDocRef.get();
+      const liveData = newDoc.data().liveData;
+      return res.status(200).json(liveData);
+    }
+
+    const liveData = snapshot.docs[0].data().liveData;
+    res.status(200).json(liveData);
+  } catch (error) {
+    console.error("Error getting game data:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+app.get("/chatLogs", async (req: any, res: any) => {
   try {
     const snapshot = await firestore.collection("chat").get();
-    let allMessages = [];
-    snapshot.docs.forEach((doc) => {
+    if (snapshot.empty) {
+      return res.status(404).json({ message: "No chat logs found" });
+    }
+
+    const allMessagesPromises = snapshot.docs.map(async (doc: any) => {
       const data = doc.data();
       if (Array.isArray(data.messages)) {
-        allMessages = allMessages.concat(data.messages);
+        return data.messages;
       }
+      return [];
     });
+
+    const allMessagesArrays = await Promise.all(allMessagesPromises);
+    const allMessages = allMessagesArrays.flat();
+
     res.status(200).json(allMessages);
-  } catch (error) {
+  } catch (error: any) {
+    console.error("Error getting chat logs:", error);
     res.status(500).send("Error getting chat logs: " + error.message);
   }
 });
 
-app.post("/message/report", async (req, res) => {
+app.post("/message/report", async (req: any, res: any) => {
   try {
     const { msgId, userId, type } = req.body;
+    if (!msgId || !userId || !type) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
     const querySnapshot = await firestore
       .collection("chat")
       .where("channelId", "==", "chat")
       .get();
-    querySnapshot.forEach(async (doc) => {
-      const messages = doc.data().messages;
 
-      const updatedMessages = messages.map((message) => {
+    if (querySnapshot.empty) {
+      return res.status(404).json({ error: "No chat documents found" });
+    }
+
+    const batch = firestore.batch();
+
+    querySnapshot.docs.forEach((doc: any) => {
+      const messages = doc.data().messages;
+      const updatedMessages = messages.map((message: any) => {
         if (message.msgId === msgId) {
           message.report = message.report || [];
           message.report.push({
@@ -125,18 +238,45 @@ app.post("/message/report", async (req, res) => {
         return message;
       });
 
-      await firestore
-        .collection("chat")
-        .doc(doc.id)
-        .update({ messages: updatedMessages });
+      batch.update(doc.ref, { messages: updatedMessages });
     });
 
-    res.status(200);
-  } catch (error) {
-    res.status(500);
+    await batch.commit();
+
+    res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error("Error updating messages:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-server.listen(config.port, () => console.log(`Run on server ${config.port}`));
+app.delete("/deleteLiveInfo", async (req: any, res: any) => {
+  try {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, "0");
+    const day = String(today.getDate()).padStart(2, "0");
+    const currentDate = `${year}${month}${day}`;
+
+    const liveScoreRef = firestore.collection("liveScore");
+    const snapshot = await liveScoreRef
+      .where("gameId", "==", currentDate)
+      .get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ message: "No game data found for today" });
+    }
+
+    const deletePromises = snapshot.docs.map((doc: any) => doc.ref.delete());
+    await Promise.all(deletePromises);
+
+    res.status(200).json({ message: "Today's game data deleted successfully" });
+  } catch (error: any) {
+    console.error("Error deleting game data:", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+server.listen(5000, () => console.log(`Run on server 5000`));
 
 app.use(express.static(path.join(__dirname, "src")));
