@@ -4,7 +4,7 @@
     "moduleDetection": "force",
     "module": "CommonJS",
     "target": "ES6",
-    "esModuleInterop": true, // CommonJS와 ESModule 간의 상호 운용성을 활성화합니다.
-    "allowSyntheticDefaultImports": true // 기본 가져오기를 허용합니다.
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true
   }
 }
