@@ -56,7 +56,7 @@ gameNamespace.on("connection", (socket: any) => {
         .get();
 
       let docRef;
-
+      console.log("hhh");
       if (snapshot.empty) {
         docRef = await liveScoreRef.add({
           gameId: currentDate,
